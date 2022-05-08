@@ -411,6 +411,12 @@ def restart_looper():
     looping_stream = launch_looper()
     #os.execlp('python3', 'python3', 'main.py') #replaces current process with a new instance of the same script
 
+def exit_looper():
+    global listener
+    print("ESC pressed exit_looper")
+    pa.terminate()
+    listener = None
+
 #now defining functions of all the buttons during jam session...
 
 for i in range(4):
@@ -427,7 +433,7 @@ RECBUTTONS[3].when_pressed = set_rec_4
 PLAYBUTTONS[3].when_held = finish
 PLAYBUTTONS[0].when_held = restart_looper
 
-_map = {'1':gen_set_rec(1),
+_map_press = {'1':gen_set_rec(1),
         '2':gen_set_rec(2),
         '3':gen_set_rec(3),
         '4':gen_set_rec(4),
@@ -443,29 +449,40 @@ _map = {'1':gen_set_rec(1),
         'x':loops[1].bouncewait,
         'c':loops[2].bouncewait,
         'v':loops[3].bouncewait,
-        'K':restart_looper
+        'K':restart_looper,
+        'esc':exit_looper
         }
 
-def _echo(key):
+_map_release = {'1':loops[0].bouncewait,
+                '2':loops[1].bouncewait,
+                '3':loops[2].bouncewait,
+                '4':loops[3].bouncewait
+        }
+
+def echo(key):
     def f():
-        try:
-            print('keypress',key.char)
-        except AttributeError:
-            print("keypress non-alpha",key)
+        print("echo",key)
     return f
 
 def on_keypress(key):
     try:
         print('keypress',key.char)
-        action = _map.get(key.char, lambda key: print("echo",key))
+        action = _map_press.get(key.char, echo(key))
         action()
     except AttributeError:
         print("keypress non-alpha",key,getattr(key, 'name', "can't get name"))
+        action = _map_press.get(key.name, echo(key))
+        action()
 
 def on_keyrelease(key):
-    if key == keyboard.Key.esc:
-        print("ESC")
-        return False
+    try:
+        print('keyrel',key.char)
+        action = _map_release.get(key.char, echo(key))
+        action()
+    except AttributeError:
+        print("keyrel non-alpha",key,getattr(key, 'name', "can't get name"))
+        action = _map_release.get(key.name, echo(key))
+        action()
 
 #this while loop runs during the jam session.
 #while session.not finished:
