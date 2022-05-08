@@ -10,7 +10,7 @@ import os
 ## JG hacks
 from emulation import LED, Button
 from pynput import keyboard
-import config
+from config import SAMPLE_RATE, CHUNK, LATENCY_IN_MS, INPUT_DEVICE, OUTPUT_DEVICE, OVERSHOOT
 
 #defining buttons and LEDs
 PLAYLEDS = (LED(2), LED(3), LED(4), LED(17))
@@ -18,30 +18,18 @@ RECLEDS = (LED(27), LED(22), LED(10), LED(9))
 PLAYBUTTONS = (Button(11), Button(5), Button(6), Button(13))
 RECBUTTONS = (Button(19), Button(26), Button(21), Button(20))
 
-#get configuration (audio settings etc.) from file
-settings_file = open('Config/settings.prt', 'r')
-parameters = settings_file.readlines()
-settings_file.close()
-
-RATE = int(parameters[0]) #sample rate
-CHUNK = int(parameters[1]) #buffer size
-print(str(RATE) + ' ' +  str(CHUNK))
+print('rate', SAMPLE_RATE, 'chunk',CHUNK)
 FORMAT = pyaudio.paInt16 #specifies bit depth (16-bit)
 CHANNELS = 1 #mono audio
-latency_in_milliseconds = int(parameters[2])
-LATENCY = round((latency_in_milliseconds/1000) * (RATE/CHUNK)) #latency in buffers
+LATENCY = round((LATENCY_IN_MS/1000) * (SAMPLE_RATE/CHUNK)) #latency in buffers
 print('latency correction (buffers): ' + str(LATENCY))
-INDEVICE = int(parameters[3]) #index (per pyaudio) of input device
-OUTDEVICE = config.OUTPUT_DEVICE#int(parameters[4]) #index of output device
-print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
-overshoot_in_milliseconds = int(parameters[5]) #allowance in milliseconds for pressing 'stop recording' late
-OVERSHOOT = round((overshoot_in_milliseconds/1000) * (RATE/CHUNK)) #allowance in buffers
+overshoot_in_milliseconds = OVERSHOOT #allowance in milliseconds for pressing 'stop recording' late
+OVERSHOOT = round((overshoot_in_milliseconds/1000) * (SAMPLE_RATE/CHUNK)) #allowance in buffers
 MAXLENGTH = int(12582912 / CHUNK) #96mb of audio in total
 SAMPLEMAX = 0.9 * (2**15) #maximum possible value for an audio sample (little bit of margin)
 LENGTH = 0 #length of the first recording on track 1, all subsequent recordings quantized to a multiple of this.
 
 debounce_length = 0.1 #length in seconds of button debounce period
-
 silence = np.zeros([CHUNK], dtype = np.int16) #a buffer containing silence
 
 #mixed output (sum of audio from tracks) is multiplied by output_volume before being played.
@@ -61,7 +49,8 @@ def fadeout(buffer):
 pa = pyaudio.PyAudio()
 
 class audioloop:
-    def __init__(self):
+    def __init__(self, id):
+        self._id = id
         self.initialized = False
         self.length_factor = 1
         self.length = 0
@@ -87,7 +76,7 @@ class audioloop:
             self.readp = 0
             if self.isrecording:
                 self.dub_ratio = self.dub_ratio * 0.9
-                print(self.dub_ratio)
+                print('loop',self._id,'dub ratio', self.dub_ratio)
         else:
             self.readp = self.readp + 1
         self.writep = (self.writep + 1) % self.length
@@ -101,8 +90,8 @@ class audioloop:
         self.last_buffer_recorded = self.writep
         self.length_factor = (int((self.length - OVERSHOOT) / LENGTH) + 1)
         self.length = self.length_factor * LENGTH
-        print('length ' + str(self.length))
-        print('last buffer recorded ' + str(self.last_buffer_recorded))
+        print('loop',self._id,'length ' + str(self.length))
+        print('loop',self._id,'last buffer recorded ' + str(self.last_buffer_recorded))
         #crossfade
         fadeout(self.audio[self.last_buffer_recorded]) #fade out the last recorded buffer
         preceding_buffer_copy = np.copy(self.preceding_buffer)
@@ -201,7 +190,7 @@ class audioloop:
         self.rec_just_pressed = False
 
 #defining four audio loops. loops[0] is the master loop.
-loops = (audioloop(), audioloop(), audioloop(), audioloop())
+loops = (audioloop(1), audioloop(2), audioloop(3), audioloop(4))
 
 #while looping, prev_rec_buffer keeps track of the audio buffer recorded before the current one
 prev_rec_buffer = np.zeros([CHUNK], dtype = np.int16)
@@ -329,19 +318,25 @@ def looping_callback(in_data, frame_count, time_info, status):
     #play mixed audio and move on to next iteration
     return(play_buffer, pyaudio.paContinue)
 
+
 #now initializing looping_stream (the only audio stream)
-looping_stream = pa.open(
-    format = FORMAT,
-    channels = CHANNELS,
-    rate = RATE,
-    input = True,
-    output = True,
-    input_device_index = INDEVICE,
-    output_device_index = OUTDEVICE,
-    frames_per_buffer = CHUNK,
-    start = True,
-    stream_callback = looping_callback
-)
+
+def launch_looper():
+    looping_stream = pa.open(
+        format = FORMAT,
+        channels = CHANNELS,
+        rate = SAMPLE_RATE,
+        input = True,
+        output = True,
+        input_device_index = INPUT_DEVICE,
+        output_device_index = OUTPUT_DEVICE,
+        frames_per_buffer = CHUNK,
+        start = True,
+        stream_callback = looping_callback
+    )
+    return looping_stream
+
+looping_stream = launch_looper()
 
 #audio stream has now been started and the callback function is running in a background thread.
 #first, we give the stream some time to properly start up
@@ -382,6 +377,10 @@ time.sleep(0.5)
 #UI do everything else
 
 #the 4 following functions are here because you seemingly can't pass parameters in button-press event definitions
+def gen_set_rec(i):
+    def f():
+        set_recording(i)
+    return f
 
 def set_rec_1():
     set_recording(1)
@@ -400,8 +399,17 @@ def finish():
 
 #restart_looper() restarts this python script
 def restart_looper():
+    global LENGTH, looping_stream, pa, loops, setup_isrecording, setup_donerecording
+    LENGTH = 0
+    print("RESTART LOOPER", LENGTH, pa)
     pa.terminate() #needed to free audio device for reuse
-    os.execlp('python3', 'python3', 'main.py') #replaces current process with a new instance of the same script
+    pa = pyaudio.PyAudio()
+    loops = (audioloop(1), audioloop(2), audioloop(3), audioloop(4))
+    print("new PyAudio instance",pa)
+    setup_isrecording = False #set to True when track 1 recording button is first pressed
+    setup_donerecording = False #set to true when first track 1 recording is done
+    looping_stream = launch_looper()
+    #os.execlp('python3', 'python3', 'main.py') #replaces current process with a new instance of the same script
 
 #now defining functions of all the buttons during jam session...
 
@@ -419,10 +427,10 @@ RECBUTTONS[3].when_pressed = set_rec_4
 PLAYBUTTONS[3].when_held = finish
 PLAYBUTTONS[0].when_held = restart_looper
 
-_map = {'1':set_rec_1,
-        '2':set_rec_2,
-        '3':set_rec_3,
-        '4':set_rec_4,
+_map = {'1':gen_set_rec(1),
+        '2':gen_set_rec(2),
+        '3':gen_set_rec(3),
+        '4':gen_set_rec(4),
         'q':loops[0].clear,
         'w':loops[1].clear,
         'e':loops[2].clear,
@@ -434,7 +442,8 @@ _map = {'1':set_rec_1,
         'z':loops[0].bouncewait,
         'x':loops[1].bouncewait,
         'c':loops[2].bouncewait,
-        'v':loops[3].bouncewait
+        'v':loops[3].bouncewait,
+        'K':restart_looper
         }
 
 def _echo(key):
