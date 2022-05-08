@@ -5,7 +5,12 @@ import pyaudio
 import numpy as np
 import time
 import os
-from gpiozero import LED, Button
+#from gpiozero import LED, Button
+
+## JG hacks
+from emulation import LED, Button
+from pynput import keyboard
+import config
 
 #defining buttons and LEDs
 PLAYLEDS = (LED(2), LED(3), LED(4), LED(17))
@@ -27,7 +32,7 @@ latency_in_milliseconds = int(parameters[2])
 LATENCY = round((latency_in_milliseconds/1000) * (RATE/CHUNK)) #latency in buffers
 print('latency correction (buffers): ' + str(LATENCY))
 INDEVICE = int(parameters[3]) #index (per pyaudio) of input device
-OUTDEVICE = int(parameters[4]) #index of output device
+OUTDEVICE = config.OUTPUT_DEVICE#int(parameters[4]) #index of output device
 print('looking for devices ' + str(INDEVICE) + ' and ' + str(OUTDEVICE))
 overshoot_in_milliseconds = int(parameters[5]) #allowance in milliseconds for pressing 'stop recording' late
 OVERSHOOT = round((overshoot_in_milliseconds/1000) * (RATE/CHUNK)) #allowance in buffers
@@ -186,6 +191,15 @@ class audioloop:
         time.sleep(debounce_length)
         self.play_just_pressed = False
 
+    def bouncewait(self):
+        if self.isrecording:
+            self.rec_just_pressed = True
+        else:
+            self.play_just_pressed = True
+        time.sleep(debounce_length)
+        self.play_just_pressed = False
+        self.rec_just_pressed = False
+
 #defining four audio loops. loops[0] is the master loop.
 loops = (audioloop(), audioloop(), audioloop(), audioloop())
 
@@ -221,6 +235,7 @@ def showstatus():
             PLAYLEDS[i].on()
         else:
             PLAYLEDS[i].off()
+    print("rec",[l.isrecording for l in loops])
 
 #set_recording() schedules a loop to start recording, for when master loop next restarts
 def set_recording(loop_number = 0):
@@ -367,6 +382,7 @@ time.sleep(0.5)
 #UI do everything else
 
 #the 4 following functions are here because you seemingly can't pass parameters in button-press event definitions
+
 def set_rec_1():
     set_recording(1)
 def set_rec_2():
@@ -403,8 +419,57 @@ RECBUTTONS[3].when_pressed = set_rec_4
 PLAYBUTTONS[3].when_held = finish
 PLAYBUTTONS[0].when_held = restart_looper
 
+_map = {'1':set_rec_1,
+        '2':set_rec_2,
+        '3':set_rec_3,
+        '4':set_rec_4,
+        'q':loops[0].clear,
+        'w':loops[1].clear,
+        'e':loops[2].clear,
+        'r':loops[3].clear,
+        'a':loops[0].toggle_mute,
+        's':loops[1].toggle_mute,
+        'd':loops[2].toggle_mute,
+        'f':loops[3].toggle_mute,
+        'z':loops[0].bouncewait,
+        'x':loops[1].bouncewait,
+        'c':loops[2].bouncewait,
+        'v':loops[3].bouncewait
+        }
+
+def _echo(key):
+    def f():
+        try:
+            print('keypress',key.char)
+        except AttributeError:
+            print("keypress non-alpha",key)
+    return f
+
+def on_keypress(key):
+    try:
+        print('keypress',key.char)
+        action = _map.get(key.char, lambda key: print("echo",key))
+        action()
+    except AttributeError:
+        print("keypress non-alpha",key,getattr(key, 'name', "can't get name"))
+
+def on_keyrelease(key):
+    if key == keyboard.Key.esc:
+        print("ESC")
+        return False
+
 #this while loop runs during the jam session.
-while not finished:
+#while session.not finished:
+#    showstatus()
+#    time.sleep(0.3)
+
+listener = keyboard.Listener(
+        on_press=on_keypress,
+        on_release=on_keyrelease)
+
+listener.start()
+
+while listener:
     showstatus()
     time.sleep(0.3)
 
